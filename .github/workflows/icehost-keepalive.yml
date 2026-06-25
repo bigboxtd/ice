@@ -70,7 +70,7 @@ jobs:
 
       - name: Run check script
         env:
-          ICEHOST_SERVER_URL: ${{ secrets.ICEHOST_SERVER_URL }}
+          ICEHOST_SERVER_ID: ${{ secrets.ICEHOST_SERVER_ID }}
           ICEHOST_EMAIL: ${{ secrets.ICEHOST_EMAIL }}
           ICEHOST_PASSWORD: ${{ secrets.ICEHOST_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
