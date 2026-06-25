@@ -282,9 +282,11 @@ def login_with_email_password(page, context):
 
         print("仍在 CF 验证页，尝试点击 Turnstile checkbox...")
         click_turnstile(page)
+        # 点击后先等 5 秒让 CF 后台验证完成，再开始轮询
+        time.sleep(5)
 
-        # 点击后最多等 35 秒等 CF 放行
-        if wait_for_login_page(page, timeout_s=35):
+        # 点击后最多等 60 秒等 CF 放行跳转
+        if wait_for_login_page(page, timeout_s=60):
             print(f"第 {attempt} 次 CF 验证通过，已进入登录页。")
             break
         else:
