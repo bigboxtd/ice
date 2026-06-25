@@ -1,7 +1,20 @@
 name: IceHost Hourly KeepAlive
 
 on:
-  workflow_dispatch: # 由外部定时（如 cron-job.org）进行每小时触发
+  workflow_dispatch: # 由外部定时（如 cron-job.org）每小时触发，也可手动运行
+    inputs:
+      enable_recording:
+        description: '是否开启录屏（true=录屏 / false=不录屏）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+  actions: write   # 缓存读写 + 清理历史运行记录都需要此权限
 
 jobs:
   check-and-start:
@@ -17,18 +30,53 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # 核心改变：安装 seleniumbase 代替 playwright
           pip install seleniumbase requests
+          # 录屏需要 ffmpeg 在虚拟显示器上抓屏；下载 Xray 需要 curl + unzip
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg curl unzip
 
-      - name: Set up WARP
-        uses: fscarmen/warp-on-actions@v1.1
+      - name: 下载并启动 Xray 代理（与 freecp 项目相同方案）
+        env:
+          V2RAY_CONFIG: ${{ secrets.V2RAY_CONFIG }}
+        run: |
+          curl -sL https://github.com/XTLS/Xray-core/releases/download/v25.5.16/Xray-linux-64.zip -o xray.zip
+          unzip xray.zip && chmod +x xray
+          echo "$V2RAY_CONFIG" > config.json
+          ./xray run -c config.json &
+          sleep 5
+          echo "直连 IP："
+          curl -s --max-time 5 ifconfig.me || echo "(超时)"
+          echo ""
+          echo "代理 IP："
+          curl -s --max-time 5 --socks5 127.0.0.1:10808 ifconfig.me || echo "(代理超时，请检查 V2RAY_CONFIG)"
+          echo ""
+
+      - name: 修复 DNS
+        run: |
+          sudo systemctl stop systemd-resolved 2>/dev/null || true
+          sudo rm -f /etc/resolv.conf
+          printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' | sudo tee /etc/resolv.conf
+          sudo chattr +i /etc/resolv.conf 2>/dev/null || true
+          sleep 2
+
+      - name: Restore cached cookies
+        id: restore-cookies
+        uses: actions/cache/restore@v4
+        with:
+          path: state/icehost_cookies.json
+          key: icehost-cookies-${{ github.run_id }}
+          restore-keys: |
+            icehost-cookies-
 
       - name: Run check script
         env:
           ICEHOST_SERVER_URL: ${{ secrets.ICEHOST_SERVER_URL }}
-          ICEHOST_COOKIES: ${{ secrets.ICEHOST_COOKIES }}
+          ICEHOST_EMAIL: ${{ secrets.ICEHOST_EMAIL }}
+          ICEHOST_PASSWORD: ${{ secrets.ICEHOST_PASSWORD }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          ENABLE_RECORDING: ${{ github.event.inputs.enable_recording }}
+          PROXY: "socks5://127.0.0.1:10808"
         run: python icehost_run.py
 
       - name: Upload Debug Screenshot
@@ -38,3 +86,78 @@ jobs:
           name: icehost-debug-screenshot
           path: icehost_debug_screenshot.png
           if-no-files-found: ignore
+
+      - name: Upload Recording Video
+        if: always() && github.event.inputs.enable_recording == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: icehost-record-video
+          path: icehost_record.mp4
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Check cookie file exists
+        id: cookie-check
+        if: always()
+        run: |
+          if [ -f "state/icehost_cookies.json" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save cookies to Actions Cache
+        if: always() && steps.cookie-check.outputs.exists == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: state/icehost_cookies.json
+          key: icehost-cookies-${{ github.run_id }}
+
+  cleanup-old-runs:
+    name: Cleanup old workflow runs
+    needs: check-and-start
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Keep only the latest 2 runs of this workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          WORKFLOW_FILE="icehost-keepalive.yml"
+
+          echo "正在获取「$WORKFLOW_FILE」的历史运行记录..."
+          gh run list --repo "$REPO" --workflow "$WORKFLOW_FILE" \
+            --json databaseId --limit 100 --jq '.[2:][].databaseId' > old_run_ids.txt
+
+          if [ ! -s old_run_ids.txt ]; then
+            echo "没有需要清理的历史记录（总数 <= 2）。"
+            exit 0
+          fi
+
+          while read -r run_id; do
+            echo "删除旧的 run: $run_id"
+            gh run delete "$run_id" --repo "$REPO" || true
+          done < old_run_ids.txt
+
+      - name: Cleanup old cookie caches (keep latest 2)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+
+          echo "正在获取 icehost-cookies- 前缀的缓存列表..."
+          gh cache list --repo "$REPO" --key icehost-cookies- --json id,key,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[2:][].id' > old_cache_ids.txt
+
+          if [ ! -s old_cache_ids.txt ]; then
+            echo "没有需要清理的旧缓存（总数 <= 2）。"
+            exit 0
+          fi
+
+          while read -r cache_id; do
+            echo "删除旧缓存 ID: $cache_id"
+            gh cache delete "$cache_id" --repo "$REPO" || true
+          done < old_cache_ids.txt
