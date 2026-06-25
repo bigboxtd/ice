@@ -215,11 +215,40 @@ def login_with_email_password(sb):
     # 等待并处理 Cloudflare Turnstile 验证框
     on_cf_page = not sb.is_element_visible("input[name='username']")
     if on_cf_page:
-        print("检测到 Cloudflare 验证页，尝试点击验证框...")
+        print("检测到 Cloudflare 验证页，等待 Turnstile checkbox 出现...")
         try:
-            sb.uc_gui_click_captcha()
-            print("验证框已点击，等待跳转到登录表单...")
-            sb.wait_for_element_visible("input[name='username']", timeout=20)
+            # 先等 CF 从 "Verifying..." 自动阶段过渡到 "Verify you are human" 可点击状态
+            # 通过轮询 iframe 内文字判断，最多等 30 秒
+            checkbox_ready = False
+            for _ in range(30):
+                sb.sleep(1)
+                try:
+                    # 检查是否已经跳过 CF 直接到登录页
+                    if sb.is_element_visible("input[name='username']"):
+                        print("CF 自动通过，已进入登录页。")
+                        checkbox_ready = False  # 不需要再点了
+                        break
+                    # 检查 Turnstile checkbox iframe 是否已变为可点击状态
+                    # SeleniumBase uc_gui_click_captcha 内部会找 iframe，
+                    # 我们只需确认页面不再是纯 "Verifying..." 状态
+                    page_src = sb.get_page_source()
+                    if "Verify you are human" in page_src or "cf-turnstile" in page_src:
+                        print("Turnstile checkbox 已就绪，准备点击...")
+                        sb.sleep(1)  # 额外缓冲，确保 iframe 完全渲染
+                        checkbox_ready = True
+                        break
+                except Exception:
+                    pass
+            else:
+                # 30 秒都没等到，尝试强行点一次
+                print("等待 Turnstile 超时，尝试强行点击...")
+                checkbox_ready = True
+
+            if checkbox_ready:
+                sb.uc_gui_click_captcha()
+                print("验证框已点击，等待跳转到登录表单...")
+
+            sb.wait_for_element_visible("input[name='username']", timeout=30)
             print("已跳转到登录页。")
         except Exception as e:
             print(f"CF 验证处理失败: {e}")
