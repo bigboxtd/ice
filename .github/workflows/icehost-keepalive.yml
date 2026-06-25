@@ -33,7 +33,7 @@ jobs:
           pip install seleniumbase requests
           # 录屏需要 ffmpeg 在虚拟显示器上抓屏；下载 Xray 需要 curl + unzip
           sudo apt-get update -y
-          sudo apt-get install -y ffmpeg curl unzip
+          sudo apt-get install -y ffmpeg curl unzip x11-utils
 
       - name: 下载并启动 Xray 代理（与 freecp 项目相同方案）
         env:
