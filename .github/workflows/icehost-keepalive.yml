@@ -76,14 +76,14 @@ jobs:
           echo "DISPLAY=:99" >> $GITHUB_ENV
           echo "Xvfb 已启动，DISPLAY=$DISPLAY"
 
-      - name: Restore cached cookies
-        id: restore-cookies
+      - name: Restore cached profile
+        id: restore-profile
         uses: actions/cache/restore@v4
         with:
-          path: state/icehost_cookies.json
-          key: icehost-cookies-${{ github.run_id }}
+          path: state/icehost_profile
+          key: icehost-profile-${{ github.run_id }}
           restore-keys: |
-            icehost-cookies-
+            icehost-profile-
 
       - name: Run check script
         env:
@@ -114,22 +114,22 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Check cookie file exists
-        id: cookie-check
+      - name: Check profile dir exists
+        id: profile-check
         if: always()
         run: |
-          if [ -f "state/icehost_cookies.json" ]; then
+          if [ -d "state/icehost_profile" ] && [ -n "$(ls -A state/icehost_profile 2>/dev/null)" ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Save cookies to Actions Cache
-        if: always() && steps.cookie-check.outputs.exists == 'true'
+      - name: Save profile to Actions Cache
+        if: always() && steps.profile-check.outputs.exists == 'true'
         uses: actions/cache/save@v4
         with:
-          path: state/icehost_cookies.json
-          key: icehost-cookies-${{ github.run_id }}
+          path: state/icehost_profile
+          key: icehost-profile-${{ github.run_id }}
 
   cleanup-old-runs:
     name: Cleanup old workflow runs
@@ -157,13 +157,13 @@ jobs:
             gh run delete "$run_id" --repo "$REPO" || true
           done < old_run_ids.txt
 
-      - name: Cleanup old cookie caches (keep latest 2)
+      - name: Cleanup old profile caches (keep latest 2)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           REPO="${{ github.repository }}"
-          echo "正在获取 icehost-cookies- 前缀的缓存列表..."
-          gh cache list --repo "$REPO" --key icehost-cookies- --json id,key,createdAt \
+          echo "正在获取 icehost-profile- 前缀的缓存列表..."
+          gh cache list --repo "$REPO" --key icehost-profile- --json id,key,createdAt \
             --jq 'sort_by(.createdAt) | reverse | .[2:][].id' > old_cache_ids.txt
           if [ ! -s old_cache_ids.txt ]; then
             echo "没有需要清理的旧缓存（总数 <= 2）。"
