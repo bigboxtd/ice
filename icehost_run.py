@@ -26,7 +26,7 @@ ENABLE_RECORDING = os.getenv("ENABLE_RECORDING", "false").strip().lower() == "tr
 RECORD_FILE = "icehost_record.mp4"
 SCREENSHOT_FILE = "icehost_debug_screenshot.png"
 
-# 虚拟屏幕分辨率，需和 SB(xvfb_width=..., xvfb_height=...) 保持一致
+# 录屏兜底分辨率（拿不到真实 Xvfb 分辨率时使用）
 XVFB_WIDTH = 1366
 XVFB_HEIGHT = 768
 
@@ -59,15 +59,34 @@ def send_tg_notification(message, photo_path=None):
             print(f"发送 TG 截图异常: {e}")
 
 
+def get_display_resolution(display):
+    """用 xdpyinfo 探测虚拟显示器的真实分辨率，探测失败则回退到默认值"""
+    try:
+        out = subprocess.check_output(
+            ["xdpyinfo", "-display", display], stderr=subprocess.DEVNULL
+        ).decode()
+        for line in out.splitlines():
+            line = line.strip()
+            if line.startswith("dimensions:"):
+                # 形如: dimensions:    1920x1080 pixels (508x285 millimeters)
+                dims = line.split()[1]
+                w, h = dims.split("x")
+                return int(w), int(h)
+    except Exception as e:
+        print(f"探测显示器分辨率失败，使用默认 {XVFB_WIDTH}x{XVFB_HEIGHT}: {e}")
+    return XVFB_WIDTH, XVFB_HEIGHT
+
+
 def start_recording():
     """在虚拟显示器上启动 ffmpeg 屏幕录制，返回 Popen 对象（失败则返回 None）"""
     display = os.environ.get("DISPLAY", ":99")
-    print(f"开启录屏，目标显示器: {display}，分辨率: {XVFB_WIDTH}x{XVFB_HEIGHT}")
+    width, height = get_display_resolution(display)
+    print(f"开启录屏，目标显示器: {display}，分辨率: {width}x{height}")
     try:
         proc = subprocess.Popen(
             [
                 "ffmpeg", "-y",
-                "-video_size", f"{XVFB_WIDTH}x{XVFB_HEIGHT}",
+                "-video_size", f"{width}x{height}",
                 "-framerate", "15",
                 "-f", "x11grab",
                 "-i", display,
@@ -253,12 +272,6 @@ def run():
         return
 
     sb_kwargs = dict(uc=True, xvfb=True)
-    # 较新版本 SeleniumBase 支持自定义虚拟屏幕尺寸，便于和录屏分辨率对齐
-    try:
-        sb_kwargs["xvfb_width"] = XVFB_WIDTH
-        sb_kwargs["xvfb_height"] = XVFB_HEIGHT
-    except Exception:
-        pass
 
     if PROXY:
         print(f"使用代理: {PROXY}")
