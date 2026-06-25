@@ -7,10 +7,12 @@ import urllib.parse
 import requests
 from seleniumbase import SB
 
-SERVER_URL = os.getenv("ICEHOST_SERVER_URL")
+BASE_URL = os.getenv("ICEHOST_BASE_URL", "https://dash.icehost.pl")
+SERVER_ID = os.getenv("ICEHOST_SERVER_ID", "").strip()
+SERVER_URL = f"{BASE_URL}/server/{SERVER_ID}" if SERVER_ID else None
 EMAIL = os.getenv("ICEHOST_EMAIL")
 PASSWORD = os.getenv("ICEHOST_PASSWORD")
-LOGIN_URL = os.getenv("ICEHOST_LOGIN_URL", "https://dash.icehost.pl/auth/login")
+LOGIN_URL = os.getenv("ICEHOST_LOGIN_URL", f"{BASE_URL}/auth/login")
 
 # 持久化保存 Cookie 的文件路径（由 workflow 通过 GitHub Actions Cache 在多次运行间保留）
 COOKIE_FILE = os.getenv("ICEHOST_COOKIE_FILE", "state/icehost_cookies.json")
@@ -246,8 +248,8 @@ def login_with_email_password(sb):
 
 
 def run():
-    if not SERVER_URL or not EMAIL or not PASSWORD:
-        print("错误: 缺少必要环境变量 (ICEHOST_SERVER_URL / ICEHOST_EMAIL / ICEHOST_PASSWORD)")
+    if not SERVER_ID or not EMAIL or not PASSWORD:
+        print("错误: 缺少必要环境变量 (ICEHOST_SERVER_ID / ICEHOST_EMAIL / ICEHOST_PASSWORD)")
         return
 
     sb_kwargs = dict(uc=True, xvfb=True)
