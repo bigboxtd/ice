@@ -12,8 +12,12 @@ EMAIL = os.getenv("ICEHOST_EMAIL")
 PASSWORD = os.getenv("ICEHOST_PASSWORD")
 LOGIN_URL = os.getenv("ICEHOST_LOGIN_URL", "https://dash.icehost.pl/auth/login")
 
-# 持久化保存 Cookie 的文件路径（会被 workflow 提交回仓库，下次 checkout 时还在）
+# 持久化保存 Cookie 的文件路径（由 workflow 通过 GitHub Actions Cache 在多次运行间保留）
 COOKIE_FILE = os.getenv("ICEHOST_COOKIE_FILE", "state/icehost_cookies.json")
+
+# SOCKS5 代理地址，和 freecp 项目同款方案：workflow 里用 Xray 起一个本地 SOCKS5 端口，
+# 这里直接把地址传给浏览器。不需要代理的话可以把 PROXY 环境变量设为空字符串。
+PROXY = os.getenv("PROXY", "socks5://127.0.0.1:10808").strip()
 
 # true/false 字符串，来自 workflow_dispatch 的下拉框输入
 ENABLE_RECORDING = os.getenv("ENABLE_RECORDING", "false").strip().lower() == "true"
@@ -253,6 +257,12 @@ def run():
         sb_kwargs["xvfb_height"] = XVFB_HEIGHT
     except Exception:
         pass
+
+    if PROXY:
+        print(f"使用代理: {PROXY}")
+        sb_kwargs["proxy"] = PROXY
+    else:
+        print("未配置 PROXY，使用直连。")
 
     recording_proc = None
 
