@@ -1,0 +1,40 @@
+name: IceHost Hourly KeepAlive
+
+on:
+  workflow_dispatch: # 由外部定时（如 cron-job.org）进行每小时触发
+
+jobs:
+  check-and-start:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          # 核心改变：安装 seleniumbase 代替 playwright
+          pip install seleniumbase requests
+
+      - name: Set up WARP
+        uses: fscarmen/warp-on-actions@v1.1
+
+      - name: Run check script
+        env:
+          ICEHOST_SERVER_URL: ${{ secrets.ICEHOST_SERVER_URL }}
+          ICEHOST_COOKIES: ${{ secrets.ICEHOST_COOKIES }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python icehost_run.py
+
+      - name: Upload Debug Screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: icehost-debug-screenshot
+          path: icehost_debug_screenshot.png
+          if-no-files-found: ignore
