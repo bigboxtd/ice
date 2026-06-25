@@ -1,8 +1,9 @@
 """
 IceHost Hourly KeepAlive
 浏览器引擎: CloakBrowser (Playwright 接口，C++ 层指纹伪装，可过 CF Turnstile)
-登录策略: Cookie 优先，失效后邮箱密码登录，登录成功后自动更新 Cookie 文件
-Cookie 持久化: GitHub Actions Cache（不写入 git 历史，公开仓库安全）
+登录策略: persistent_context 持久化 profile（保留 CF cookie/localStorage），
+          Cookie 失效后邮箱密码登录，登录成功后 profile 自动保留
+Profile 持久化: GitHub Actions Cache（不写入 git 历史，公开仓库安全）
 代理: Xray SOCKS5 本地代理，透传给 CloakBrowser
 """
 
@@ -24,8 +25,8 @@ EMAIL      = os.getenv("ICEHOST_EMAIL")
 PASSWORD   = os.getenv("ICEHOST_PASSWORD")
 LOGIN_URL  = os.getenv("ICEHOST_LOGIN_URL", f"{BASE_URL}/auth/login")
 
-# Cookie 文件路径（由 workflow 的 actions/cache 在运行间持久化）
-COOKIE_FILE = os.getenv("ICEHOST_COOKIE_FILE", "state/icehost_cookies.json")
+# persistent_context profile 目录（由 workflow 的 actions/cache 在运行间持久化）
+PROFILE_DIR = os.getenv("ICEHOST_PROFILE_DIR", "state/icehost_profile")
 
 # SOCKS5 代理，空字符串 = 直连
 PROXY = os.getenv("PROXY", "socks5://127.0.0.1:10808").strip()
@@ -38,6 +39,10 @@ SCREENSHOT_FILE  = "icehost_debug_screenshot.png"
 # 录屏兜底分辨率
 XVFB_WIDTH  = 1366
 XVFB_HEIGHT = 768
+
+# 固定 fingerprint seed：让每次运行看起来像同一台设备（returning visitor），
+# 提高 CF Turnstile / reCAPTCHA 对同 IP 的信任分
+FINGERPRINT_SEED = os.getenv("ICEHOST_FINGERPRINT_SEED", "54321")
 
 
 # ---------------------------------------------------------------------------
@@ -133,64 +138,6 @@ def stop_recording(proc):
 
 
 # ---------------------------------------------------------------------------
-# Cookie 持久化
-# ---------------------------------------------------------------------------
-def load_saved_cookies():
-    if not os.path.exists(COOKIE_FILE):
-        print(f"未找到本地 Cookie 文件（{COOKIE_FILE}），跳过 Cookie 登录。")
-        return None
-    try:
-        with open(COOKIE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list) and data:
-            print(f"已读取 {len(data)} 个 Cookie。")
-            return data
-    except Exception as e:
-        print(f"读取 Cookie 文件失败: {e}")
-    return None
-
-
-def save_cookies(context):
-    """将 Playwright BrowserContext 的 storage_state 里的 cookies 写入文件"""
-    try:
-        state = context.storage_state()
-        cookies = state.get("cookies", [])
-        os.makedirs(os.path.dirname(COOKIE_FILE) or ".", exist_ok=True)
-        with open(COOKIE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cookies, f, ensure_ascii=False, indent=2)
-        print(f"已保存 {len(cookies)} 个 Cookie 到 {COOKIE_FILE}。")
-    except Exception as e:
-        print(f"保存 Cookie 失败（不影响本次结果）: {e}")
-
-
-def inject_cookies(context, cookies):
-    """向 Playwright BrowserContext 注入 Cookie 列表"""
-    valid = []
-    for c in cookies:
-        try:
-            entry = {
-                "name":   c["name"],
-                "value":  c["value"],
-                "domain": c.get("domain", ""),
-                "path":   c.get("path", "/"),
-            }
-            # Playwright cookie 的 sameSite 取值: "Strict" | "Lax" | "None"
-            ss = str(c.get("sameSite", "")).capitalize()
-            if ss in ("Strict", "Lax", "None"):
-                entry["sameSite"] = ss
-            if c.get("secure"):
-                entry["secure"] = True
-            if c.get("expires") and c["expires"] > 0:
-                entry["expires"] = c["expires"]
-            valid.append(entry)
-        except Exception as e:
-            print(f"跳过无效 Cookie {c.get('name')}: {e}")
-    if valid:
-        context.add_cookies(valid)
-        print(f"成功注入 {len(valid)}/{len(cookies)} 个 Cookie。")
-
-
-# ---------------------------------------------------------------------------
 # 截图（Playwright page）
 # ---------------------------------------------------------------------------
 def screenshot(page, path=SCREENSHOT_FILE):
@@ -203,7 +150,7 @@ def screenshot(page, path=SCREENSHOT_FILE):
 # ---------------------------------------------------------------------------
 # CF 验证 + 登录（CloakBrowser / Playwright）
 # ---------------------------------------------------------------------------
-def wait_for_login_page(page, timeout_s=40):
+def wait_for_login_page(page, timeout_s=90):
     """等待登录表单出现，返回 True / False"""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -212,7 +159,6 @@ def wait_for_login_page(page, timeout_s=40):
             return True
         except Exception:
             pass
-        # 也检查 URL 不再是 CF challenge
         if "auth/login" in page.url and "cf_chl" not in page.url:
             try:
                 page.wait_for_selector("input[name='username']", timeout=3000)
@@ -254,10 +200,10 @@ def click_turnstile(page):
     return False
 
 
-def login_with_email_password(page, context):
+def login_with_email_password(page):
     """
     CF 验证 + 邮箱密码登录。
-    CloakBrowser 的 C++ 指纹伪装让 CF 更容易自动通过，
+    persistent_context 携带历史 CF cookie，通过率更高。
     如果没自动过则用 frame 枚举精准点击 Turnstile checkbox，最多重试 3 次。
     成功返回 True。
     """
@@ -268,8 +214,8 @@ def login_with_email_password(page, context):
         except Exception as e:
             print(f"页面加载异常（非致命）: {e}")
 
-        # 等几秒让 CF JS 执行
-        time.sleep(4)
+        # 等待 CF JS 执行（persistent context 有历史 CF cookie，通常更快通过）
+        time.sleep(5)
         screenshot(page)
 
         # 情况 1：CF 自动通过，直接进了登录表单
@@ -282,11 +228,11 @@ def login_with_email_password(page, context):
 
         print("仍在 CF 验证页，尝试点击 Turnstile checkbox...")
         click_turnstile(page)
-        # 点击后先等 5 秒让 CF 后台验证完成，再开始轮询
-        time.sleep(5)
+        # 点击后等待 8 秒让 CF 后台验证完成
+        time.sleep(8)
 
-        # 点击后最多等 60 秒等 CF 放行跳转
-        if wait_for_login_page(page, timeout_s=60):
+        # 点击后最多等 90 秒等 CF 放行跳转
+        if wait_for_login_page(page, timeout_s=90):
             print(f"第 {attempt} 次 CF 验证通过，已进入登录页。")
             break
         else:
@@ -294,7 +240,10 @@ def login_with_email_password(page, context):
             screenshot(page)
             if attempt == 3:
                 send_tg_notification(
-                    "❌ <b>IceHost CF 验证失败（已重试 3 次）</b>", SCREENSHOT_FILE
+                    "❌ <b>IceHost CF 验证失败（已重试 3 次）</b>\n"
+                    "提示：GitHub Actions 数据中心 IP 信誉较低，"
+                    "建议检查代理是否为住宅 IP，或查看录屏确认实际状态。",
+                    SCREENSHOT_FILE,
                 )
                 return False
 
@@ -303,7 +252,6 @@ def login_with_email_password(page, context):
     screenshot(page)
     try:
         page.wait_for_selector("input[name='username']", timeout=10000)
-        # 用 humanize-style 逐字符输入，降低自动化特征
         page.fill("input[name='username']", EMAIL)
         page.fill("input[name='password']", PASSWORD)
         screenshot(page)
@@ -329,19 +277,13 @@ def login_with_email_password(page, context):
         return False
 
     print(f"邮箱密码登录成功，当前 URL: {cur}")
-    save_cookies(context)
+    # persistent_context 自动保持 profile，无需手动 save_cookies
     return True
 
 
-def try_cookie_login(page, context):
-    """Cookie 优先登录，失效返回 False"""
-    saved = load_saved_cookies()
-    if not saved:
-        return False
-
-    print("注入已保存 Cookie，尝试直接访问服务器页面...")
-    inject_cookies(context, saved)
-
+def try_cookie_login(page):
+    """利用 persistent_context 已有的 cookies 尝试直接访问服务器页面"""
+    print("尝试使用 persistent profile Cookie 直接访问服务器页面...")
     try:
         page.goto(SERVER_URL, wait_until="domcontentloaded", timeout=30000)
     except Exception as e:
@@ -352,7 +294,7 @@ def try_cookie_login(page, context):
 
     cur = page.url
     if "auth/login" in cur:
-        print("Cookie 已失效，改用邮箱密码登录。")
+        print("Cookie 已失效或 profile 为空，改用邮箱密码登录。")
         return False
 
     print(f"Cookie 登录成功！当前 URL: {cur}")
@@ -367,46 +309,53 @@ def run():
         print("错误: 缺少必要环境变量 (ICEHOST_SERVER_ID / ICEHOST_EMAIL / ICEHOST_PASSWORD)")
         return
 
-    from cloakbrowser import launch
+    from cloakbrowser import launch_persistent_context
 
-    # 代理参数
     proxy_arg = PROXY if PROXY else None
     if proxy_arg:
         print(f"使用代理: {proxy_arg}")
     else:
         print("未配置 PROXY，使用直连。")
 
+    print(f"Fingerprint seed: {FINGERPRINT_SEED}")
+    print(f"Profile 目录: {PROFILE_DIR}")
+
+    # 确保 profile 目录存在
+    os.makedirs(PROFILE_DIR, exist_ok=True)
+
     recording_proc = None
 
-    # CloakBrowser 以 headless=False + xvfb 方式运行
-    # headless=False 时 CF 通过率更高（headless 模式部分站点仍能检测）
-    browser = launch(
+    # 使用 launch_persistent_context：
+    # - 保留 CF 的 cf_clearance cookie 和 challenge state（大幅提升 Turnstile 通过率）
+    # - 固定 fingerprint seed，让 CF 看到"returning visitor"
+    # - geoip=True 自动匹配代理出口的 timezone/locale（不在 new_context 里手动设，避免冲突）
+    # - headless=False，部分站点即使有 C++ patch 也会检测 headless
+    context = launch_persistent_context(
+        PROFILE_DIR,
         headless=False,
         proxy=proxy_arg,
-        geoip=True,             # 自动根据代理出口 IP 匹配时区/locale，降低 CF 风控分
-        humanize=True,          # 人类化鼠标/键盘行为
+        geoip=True,
+        humanize=True,
+        viewport={"width": 1366, "height": 768},
+        args=[f"--fingerprint={FINGERPRINT_SEED}"],
     )
 
     try:
-        context = browser.new_context(
-            viewport={"width": 1366, "height": 768},
-            locale="pl-PL",     # 波兰语 locale，与 IceHost 站点语言一致，降低异常风险
-        )
         page = context.new_page()
 
         if ENABLE_RECORDING:
             recording_proc = start_recording()
 
-        # 1. Cookie 优先登录
-        logged_in = try_cookie_login(page, context)
+        # 1. 先尝试 Cookie 登录（persistent profile 可能已有有效 session）
+        logged_in = try_cookie_login(page)
 
         if not logged_in:
             # 邮箱密码登录（含 CF 验证）
-            logged_in = login_with_email_password(page, context)
+            logged_in = login_with_email_password(page)
             if not logged_in:
                 return
 
-        # 2. 进入服务器页面（Cookie 登录时已在此页，密码登录后需跳转）
+        # 2. 进入服务器页面
         if SERVER_URL not in page.url:
             print(f"访问服务器页面: {SERVER_URL}")
             try:
@@ -463,7 +412,7 @@ def run():
 
     finally:
         try:
-            browser.close()
+            context.close()
         except Exception:
             pass
         if recording_proc:
