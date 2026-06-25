@@ -31,9 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install "cloakbrowser[geoip]" playwright requests
-          # 下载 CloakBrowser 修改版 Chromium（C++ 指纹伪装二进制）
           python -c "from cloakbrowser.download import ensure_binary; ensure_binary()"
-          # 系统库：Chromium 运行依赖 + 录屏工具
           sudo apt-get update -y
           sudo apt-get install -y ffmpeg curl unzip x11-utils xvfb \
             libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
@@ -114,18 +112,24 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Check profile dir exists
+      - name: Check whether profile should be saved
+        # 只有登录成功（无 login_failed 标志文件）且 profile 目录非空，才保存
         id: profile-check
         if: always()
         run: |
-          if [ -d "state/icehost_profile" ] && [ -n "$(ls -A state/icehost_profile 2>/dev/null)" ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+          if [ -f "state/icehost_login_failed" ]; then
+            echo "检测到登录失败标志，跳过 profile 保存（避免缓存残缺 cookie）。"
+            echo "should_save=false" >> "$GITHUB_OUTPUT"
+          elif [ -d "state/icehost_profile" ] && [ -n "$(ls -A state/icehost_profile 2>/dev/null)" ]; then
+            echo "登录成功，profile 目录非空，保存 profile。"
+            echo "should_save=true" >> "$GITHUB_OUTPUT"
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "profile 目录为空，跳过保存。"
+            echo "should_save=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Save profile to Actions Cache
-        if: always() && steps.profile-check.outputs.exists == 'true'
+        if: always() && steps.profile-check.outputs.should_save == 'true'
         uses: actions/cache/save@v4
         with:
           path: state/icehost_profile
