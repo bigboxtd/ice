@@ -1,7 +1,7 @@
 name: IceHost Hourly KeepAlive
 
 on:
-  workflow_dispatch: # 由外部定时（如 cron-job.org）每小时触发，也可手动运行
+  workflow_dispatch:
     inputs:
       enable_recording:
         description: '是否开启录屏（true=录屏 / false=不录屏）'
@@ -14,7 +14,7 @@ on:
 
 permissions:
   contents: read
-  actions: write   # 缓存读写 + 清理历史运行记录都需要此权限
+  actions: write
 
 jobs:
   check-and-start:
@@ -30,12 +30,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install seleniumbase requests
-          # 录屏需要 ffmpeg 在虚拟显示器上抓屏；下载 Xray 需要 curl + unzip
+          pip install cloakbrowser playwright requests
+          playwright install-deps chromium || true
+          # 录屏依赖
           sudo apt-get update -y
-          sudo apt-get install -y ffmpeg curl unzip x11-utils
+          sudo apt-get install -y ffmpeg curl unzip x11-utils xvfb
 
-      - name: 下载并启动 Xray 代理（与 freecp 项目相同方案）
+      - name: 下载并启动 Xray 代理
         env:
           V2RAY_CONFIG: ${{ secrets.V2RAY_CONFIG }}
         run: |
@@ -59,6 +60,14 @@ jobs:
           sudo chattr +i /etc/resolv.conf 2>/dev/null || true
           sleep 2
 
+      - name: 启动 Xvfb 虚拟显示（CloakBrowser headless=False 需要）
+        run: |
+          Xvfb :99 -screen 0 1366x768x24 &
+          sleep 2
+          export DISPLAY=:99
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+          echo "Xvfb 已启动，DISPLAY=$DISPLAY"
+
       - name: Restore cached cookies
         id: restore-cookies
         uses: actions/cache/restore@v4
@@ -77,6 +86,7 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           ENABLE_RECORDING: ${{ github.event.inputs.enable_recording }}
           PROXY: "socks5://127.0.0.1:10808"
+          DISPLAY: ":99"
         run: python icehost_run.py
 
       - name: Upload Debug Screenshot
@@ -127,16 +137,13 @@ jobs:
         run: |
           REPO="${{ github.repository }}"
           WORKFLOW_FILE="icehost-keepalive.yml"
-
           echo "正在获取「$WORKFLOW_FILE」的历史运行记录..."
           gh run list --repo "$REPO" --workflow "$WORKFLOW_FILE" \
             --json databaseId --limit 100 --jq '.[2:][].databaseId' > old_run_ids.txt
-
           if [ ! -s old_run_ids.txt ]; then
             echo "没有需要清理的历史记录（总数 <= 2）。"
             exit 0
           fi
-
           while read -r run_id; do
             echo "删除旧的 run: $run_id"
             gh run delete "$run_id" --repo "$REPO" || true
@@ -147,16 +154,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           REPO="${{ github.repository }}"
-
           echo "正在获取 icehost-cookies- 前缀的缓存列表..."
           gh cache list --repo "$REPO" --key icehost-cookies- --json id,key,createdAt \
             --jq 'sort_by(.createdAt) | reverse | .[2:][].id' > old_cache_ids.txt
-
           if [ ! -s old_cache_ids.txt ]; then
             echo "没有需要清理的旧缓存（总数 <= 2）。"
             exit 0
           fi
-
           while read -r cache_id; do
             echo "删除旧缓存 ID: $cache_id"
             gh cache delete "$cache_id" --repo "$REPO" || true
