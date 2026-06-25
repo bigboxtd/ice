@@ -30,11 +30,19 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install cloakbrowser playwright requests
-          playwright install-deps chromium || true
-          # 录屏依赖
+          pip install "cloakbrowser[geoip]" playwright requests
+          # 下载 CloakBrowser 修改版 Chromium（C++ 指纹伪装二进制）
+          python -c "from cloakbrowser.download import ensure_binary; ensure_binary()"
+          # 系统库：Chromium 运行依赖 + 录屏工具
           sudo apt-get update -y
-          sudo apt-get install -y ffmpeg curl unzip x11-utils xvfb
+          sudo apt-get install -y ffmpeg curl unzip x11-utils xvfb \
+            libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+            libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+            libgbm1 libasound2t64 || \
+          sudo apt-get install -y ffmpeg curl unzip x11-utils xvfb \
+            libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+            libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+            libgbm1 libasound2
 
       - name: 下载并启动 Xray 代理
         env:
