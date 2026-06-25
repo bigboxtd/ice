@@ -205,60 +205,101 @@ def try_cookie_login(sb):
     return True
 
 
+def click_turnstile_by_iframe(sb):
+    """
+    通过枚举 iframe 找到 Cloudflare Turnstile，用 bounding_box 精准点击。
+    uc_cdp_events 模式下作为兜底手段。
+    """
+    try:
+        driver = sb.driver
+        frames = driver.find_elements("tag name", "iframe")
+        print(f"当前页面共找到 {len(frames)} 个 iframe")
+        for i, frame in enumerate(frames):
+            try:
+                src = frame.get_attribute("src") or ""
+                print(f"  iframe[{i}] src: {src[:80]}")
+                if "challenges.cloudflare.com" in src or "turnstile" in src:
+                    print(f"  → 找到 Turnstile iframe[{i}]，计算坐标...")
+                    rect = driver.execute_script(
+                        "const r = arguments[0].getBoundingClientRect();"
+                        "return {x: r.x, y: r.y, w: r.width, h: r.height};",
+                        frame
+                    )
+                    click_x = rect["x"] + rect["w"] * 0.12
+                    click_y = rect["y"] + rect["h"] * 0.5
+                    print(f"  → 点击坐标: ({click_x:.1f}, {click_y:.1f})")
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    ActionChains(driver).move_by_offset(click_x, click_y).click().perform()
+                    ActionChains(driver).move_by_offset(-click_x, -click_y).perform()
+                    return True
+            except Exception as fe:
+                print(f"  iframe[{i}] 处理异常: {fe}")
+                continue
+        print("未找到 Turnstile iframe，回退到 uc_gui_click_captcha()")
+        sb.uc_gui_click_captcha()
+        return True
+    except Exception as e:
+        print(f"click_turnstile_by_iframe 异常: {e}")
+        return False
+
+
 def login_with_email_password(sb):
-    """走完整的 CF 验证 + 邮箱密码登录流程，成功返回 True，失败返回 False（内部已发送 TG 失败通知）"""
-    print(f"访问登录页: {LOGIN_URL}")
-    sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=6)
-    sb.sleep(3)
-    sb.save_screenshot(SCREENSHOT_FILE)
+    """走完整的 CF 验证 + 邮箱密码登录流程，成功返回 True，失败返回 False"""
+    for attempt in range(1, 4):
+        print(f"[CF 验证] 第 {attempt}/3 次尝试，访问登录页: {LOGIN_URL}")
 
-    # 等待并处理 Cloudflare Turnstile 验证框
-    on_cf_page = not sb.is_element_visible("input[name='username']")
-    if on_cf_page:
-        print("检测到 Cloudflare 验证页，等待 Turnstile checkbox 出现...")
+        # uc_cdp_events 模式：用更长的 reconnect_time 让 CF 自动验证先走完
+        # reconnect_time=8 → SB 断开重连一次，给 CF JS challenge 足够时间执行
+        sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=8)
+        sb.sleep(3)
+        sb.save_screenshot(SCREENSHOT_FILE)
+
+        # 情况1：CF 自动通过，直接进了登录页
+        if sb.is_element_visible("input[name='username']"):
+            print("CF 自动通过（uc_cdp_events），已进入登录页。")
+            break
+
+        print("仍在 CF 验证页，尝试 uc_gui_handle_cf() ...")
+        # uc_gui_handle_cf 是 uc_cdp_events 模式专用方法，
+        # 内部会监听 CF challenge 完成事件并在合适时机点击
         try:
-            # 先等 CF 从 "Verifying..." 自动阶段过渡到 "Verify you are human" 可点击状态
-            # 通过轮询 iframe 内文字判断，最多等 30 秒
-            checkbox_ready = False
-            for _ in range(30):
-                sb.sleep(1)
-                try:
-                    # 检查是否已经跳过 CF 直接到登录页
-                    if sb.is_element_visible("input[name='username']"):
-                        print("CF 自动通过，已进入登录页。")
-                        checkbox_ready = False  # 不需要再点了
-                        break
-                    # 检查 Turnstile checkbox iframe 是否已变为可点击状态
-                    # SeleniumBase uc_gui_click_captcha 内部会找 iframe，
-                    # 我们只需确认页面不再是纯 "Verifying..." 状态
-                    page_src = sb.get_page_source()
-                    if "Verify you are human" in page_src or "cf-turnstile" in page_src:
-                        print("Turnstile checkbox 已就绪，准备点击...")
-                        sb.sleep(1)  # 额外缓冲，确保 iframe 完全渲染
-                        checkbox_ready = True
-                        break
-                except Exception:
-                    pass
-            else:
-                # 30 秒都没等到，尝试强行点一次
-                print("等待 Turnstile 超时，尝试强行点击...")
-                checkbox_ready = True
-
-            if checkbox_ready:
-                sb.uc_gui_click_captcha()
-                print("验证框已点击，等待跳转到登录表单...")
-
-            sb.wait_for_element_visible("input[name='username']", timeout=30)
-            print("已跳转到登录页。")
+            sb.uc_gui_handle_cf()
+            sb.sleep(3)
         except Exception as e:
-            print(f"CF 验证处理失败: {e}")
+            print(f"uc_gui_handle_cf 异常（非致命）: {e}")
+
+        sb.save_screenshot(SCREENSHOT_FILE)
+
+        # 情况2：handle_cf 处理后进了登录页
+        if sb.is_element_visible("input[name='username']"):
+            print("uc_gui_handle_cf 处理后已进入登录页。")
+            break
+
+        print("uc_gui_handle_cf 未通过，改用 iframe 枚举精准点击...")
+        click_turnstile_by_iframe(sb)
+        sb.sleep(2)
+        sb.save_screenshot(SCREENSHOT_FILE)
+
+        # 点击后等最多 30 秒等跳转
+        passed = False
+        for _ in range(30):
+            sb.sleep(1)
+            if sb.is_element_visible("input[name='username']"):
+                passed = True
+                break
+
+        if passed:
+            print(f"第 {attempt} 次 CF 验证通过，已进入登录页。")
+            break
+        else:
+            print(f"第 {attempt}/3 次 CF 验证未通过，截图后重试...")
             sb.save_screenshot(SCREENSHOT_FILE)
-            send_tg_notification(
-                "❌ <b>IceHost CF 验证失败，请检查截图。</b>", SCREENSHOT_FILE
-            )
-            return False
-    else:
-        print("未检测到 CF 验证页，直接进入登录页。")
+            if attempt == 3:
+                send_tg_notification(
+                    "❌ <b>IceHost CF 验证失败（已重试 3 次），请检查截图。</b>",
+                    SCREENSHOT_FILE,
+                )
+                return False
 
     sb.save_screenshot(SCREENSHOT_FILE)
 
@@ -300,7 +341,7 @@ def run():
         print("错误: 缺少必要环境变量 (ICEHOST_SERVER_ID / ICEHOST_EMAIL / ICEHOST_PASSWORD)")
         return
 
-    sb_kwargs = dict(uc=True, xvfb=True)
+    sb_kwargs = dict(uc=True, xvfb=True, uc_cdp_events=True)
 
     if PROXY:
         print(f"使用代理: {PROXY}")
