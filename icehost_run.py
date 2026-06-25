@@ -381,6 +381,7 @@ def run():
     browser = launch(
         headless=False,
         proxy=proxy_arg,
+        geoip=True,             # 自动根据代理出口 IP 匹配时区/locale，降低 CF 风控分
         humanize=True,          # 人类化鼠标/键盘行为
     )
 
