@@ -155,14 +155,23 @@ def screenshot(page, path=SCREENSHOT_FILE):
 # ---------------------------------------------------------------------------
 def is_cf_challenge(page):
     """
-    检测当前页面是否仍处于 CF 挑战页。
-    CF 挑战页的 URL 保持目标地址不变，只能通过 DOM 特征判断。
+    检测当前页面是否仍处于 CF 整页拦截挑战（而不是嵌入在正常业务页面里的
+    隐式/managed Turnstile 小部件，那种小部件常驻在很多页面上做风控打分，
+    并不代表页面被拦截）。
+
+    判断逻辑：
+      - title 命中 "just a moment" → 一定是拦截页
+      - body 命中 CF 专属关键词 → 一定是拦截页
+      - 仅仅存在 turnstile/challenges.cloudflare.com 的 iframe，但页面同时
+        有大量非 CF 的正常业务文字内容 → 判定为隐式小部件，不算拦截
     """
+    has_cf_frame = False
     for frame in page.frames:
         url = frame.url or ""
         if "challenges.cloudflare.com" in url or "turnstile" in url:
-            print(f"  [CF检测] 发现挑战 frame: {url[:80]}")
-            return True
+            has_cf_frame = True
+            print(f"  [CF检测] 发现 turnstile/challenge frame: {url[:80]}")
+            break
 
     try:
         title = page.title()
@@ -172,21 +181,33 @@ def is_cf_challenge(page):
     except Exception:
         pass
 
+    body_text = ""
     try:
         body_text = page.locator("body").inner_text(timeout=2000)
-        cf_keywords = [
-            "Verify you are human",
-            "Checking if the site connection is secure",
-            "Enable JavaScript and cookies",
-        ]
-        for kw in cf_keywords:
-            if kw in body_text:
-                print(f"  [CF检测] body 命中关键词: {kw}")
-                return True
     except Exception:
         pass
 
-    return False
+    cf_keywords = [
+        "Verify you are human",
+        "Checking if the site connection is secure",
+        "Enable JavaScript and cookies",
+    ]
+    for kw in cf_keywords:
+        if kw in body_text:
+            print(f"  [CF检测] body 命中关键词: {kw}")
+            return True
+
+    if not has_cf_frame:
+        return False
+
+    # 有 turnstile frame，但没有任何 CF 关键词，再看页面正文是否足够丰富。
+    # 真正的整页拦截基本不会有超过一两百字的正常业务内容。
+    if len(body_text.strip()) > 200:
+        print("  [CF检测] 存在 turnstile frame，但页面含大量正常业务内容，判定为隐式小部件（非拦截）。")
+        return False
+
+    print("  [CF检测] 存在 turnstile frame 且页面内容稀少，判定为拦截页。")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +355,13 @@ def login_with_email_password(page):
             return False
     else:
         print("[登录] 无 CF 挑战，直接进入登录页。")
+
+    # 如果访问 /auth/login 后被站点自动跳转到了其它页面（说明 session 其实
+    # 是有效的，站点认为你已登录，不会再展示用户名/密码输入框），
+    # 直接当作登录成功，不要傻等 input[name='username'] 超时。
+    if "auth/login" not in page.url:
+        print(f"[登录] 访问登录页后被重定向到 {page.url}，说明已处于登录状态，跳过表单步骤。")
+        return True
 
     screenshot(page)
     print("等待登录表单...")
