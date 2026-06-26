@@ -594,10 +594,26 @@ def run():
                 try:
                     start_btn.wait_for(state="visible", timeout=8000)
                     start_btn.click()
-                    time.sleep(5)
-                    screenshot(page)
                     confirm_dialog_if_present()
-                    print("已点击「START」启动按钮。")
+                    print("已点击「START」启动按钮，轮询等待服务器变为 RUNNING（最多 120 秒）...")
+                    waited = 0
+                    running = False
+                    while waited < 120:
+                        time.sleep(5)
+                        waited += 5
+                        try:
+                            cur_text = page.locator("body").inner_text(timeout=3000)
+                        except Exception:
+                            cur_text = page.content()
+                        if "running" in pl_lower(cur_text):
+                            running = True
+                            break
+                        print(f"  [{waited}s] 服务器尚未 RUNNING，继续等待...")
+                    screenshot(page)
+                    if running:
+                        print(f"服务器已成功启动（RUNNING），耗时约 {waited} 秒。")
+                    else:
+                        print("警告：等待 120 秒后服务器仍未显示 RUNNING，继续执行后续续期步骤。")
                 except Exception as e:
                     print(f"未找到「START」启动按钮: {e}")
 
