@@ -218,25 +218,59 @@ def click_turnstile(page):
     return False
 
 
-def wait_for_cf_pass(page, timeout_s=90):
+def turnstile_token_present(page):
+    """
+    检测 Turnstile 验证是否已成功：验证通过的瞬间会把 token 写入
+    隐藏的 cf-turnstile-response input，这个信号比 iframe 消失快得多，
+    不需要等页面跳转/重渲染。
+    """
+    try:
+        token = page.evaluate(
+            """() => {
+                const els = document.querySelectorAll(
+                    'input[name="cf-turnstile-response"], '
+                    + 'input[name^="cf-turnstile-response"], '
+                    + 'textarea[name="cf-turnstile-response"]'
+                );
+                for (const el of els) {
+                    if (el.value && el.value.length > 10) return el.value.length;
+                }
+                return 0;
+            }"""
+        )
+        if token:
+            print(f"  [CF检测] 检测到 turnstile-response token（长度 {token}），验证已通过。")
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def wait_for_cf_pass(page, timeout_s=30, poll_interval=1.0):
+    """
+    优先用 token 信号判断是否通过（快），同时仍兜底检查 frame 是否消失。
+    timeout 调小：token 信号通常几秒内就会出现，不需要等 90 秒。
+    """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
+        if turnstile_token_present(page):
+            return True
         if not is_cf_challenge(page):
             return True
-        time.sleep(2)
+        time.sleep(poll_interval)
     return False
 
 
 def handle_cf_challenge(page):
     """处理 CF 挑战，最多重试 3 次。返回 True 表示已通过。"""
     for attempt in range(1, 4):
-        if not is_cf_challenge(page):
+        if turnstile_token_present(page) or not is_cf_challenge(page):
             print(f"CF 挑战已通过（第 {attempt} 次检查）。")
             return True
         print(f"[CF] 第 {attempt}/3 次，尝试点击 Turnstile...")
         click_turnstile(page)
-        time.sleep(8)
-        if wait_for_cf_pass(page, timeout_s=90):
+        time.sleep(3)
+        if wait_for_cf_pass(page, timeout_s=30, poll_interval=1.0):
             print(f"[CF] 第 {attempt} 次点击后验证通过。")
             return True
         print(f"[CF] 第 {attempt}/3 次验证未通过。")
