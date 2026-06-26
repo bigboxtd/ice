@@ -246,10 +246,12 @@ def turnstile_token_present(page):
     return False
 
 
-def wait_for_cf_pass(page, timeout_s=35, poll_interval=1.5):
+def wait_for_cf_pass(page, timeout_s=110, poll_interval=1.5):
     """
     优先用 token 信号判断是否通过（能更快发现已经成功）。
-    超时设为 35 秒。
+    超时改回 110 秒：35 秒实测验证下 3 次重试全部失败（日志证实
+    每次都还在 "Just a moment" 验证中就被判超时），说明这个站点
+    在当前网络环境下验证确实需要远超 35 秒（80~100+ 秒）才出结果。
     """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -275,7 +277,7 @@ def handle_cf_challenge(page):
         print(f"[CF] 第 {attempt}/3 次，尝试点击 Turnstile...")
         click_turnstile(page)
         time.sleep(3)
-        if wait_for_cf_pass(page, timeout_s=35, poll_interval=1.5):
+        if wait_for_cf_pass(page, timeout_s=110, poll_interval=1.5):
             print(f"[CF] 第 {attempt} 次点击后验证通过。")
             return True
         print(f"[CF] 第 {attempt}/3 次验证未通过。")
