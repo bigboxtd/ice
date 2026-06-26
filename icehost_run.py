@@ -463,48 +463,114 @@ def run():
 
         LOGIN_SUCCESS = True
 
-        # 2. 确保在服务器页面
-        if SERVER_URL and SERVER_URL not in page.url:
-            print(f"访问服务器页面: {SERVER_URL}")
-            try:
-                page.goto(SERVER_URL, wait_until="domcontentloaded", timeout=30000)
-            except Exception as e:
-                print(f"服务器页面加载异常: {e}")
-            time.sleep(5)
+        PL_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZĄĆĘŁŃÓŚŹŻ"
+        PL_LOWER = "abcdefghijklmnopqrstuvwxyzącęłńóśźż"
 
+        def pl_lower(text):
+            return text.translate(str.maketrans(PL_UPPER, PL_LOWER))
+
+        def goto_with_cf_check(url, label):
+            print(f"访问{label}: {url}")
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            except Exception as e:
+                print(f"{label}加载异常: {e}")
+            time.sleep(5)
             if is_cf_challenge(page):
-                print("访问服务器页面时触发 CF 挑战，处理中...")
+                print(f"访问{label}时触发 CF 挑战，处理中...")
                 if not handle_cf_challenge(page):
-                    send_tg_notification("❌ <b>IceHost 访问服务器页 CF 验证失败</b>", SCREENSHOT_FILE)
-                    return
+                    send_tg_notification(f"❌ <b>IceHost 访问{label} CF 验证失败</b>", SCREENSHOT_FILE)
+                    return False
+            return True
+
+        # 2. 续期/激活按钮只存在于「服务器列表页」（BASE_URL）。服务器暂停时，
+        #    详情页（/server/{id}）只会显示「Serwer zawieszony」占位提示，里面
+        #    没有任何可点击内容——必须先在列表页点「Przedłuż serwer」把服务器
+        #    激活，激活之后再跳到详情页才能看到「Dodaj 6 godzin」等真正的续期
+        #    操作。
+        if not goto_with_cf_check(BASE_URL, "服务器列表页"):
+            return
 
         screenshot(page)
-        page_source = page.content()
 
-        # 3. 判定波兰语红框限制
+        # 3. 判定波兰语红框限制（限频提示，在列表页或详情页都可能出现）
         keywords = ["Nie możesz przedłużyć", "niedawno to zrobiłeś", "kolejne 6 godziny"]
-        if any(kw in page_source for kw in keywords):
+
+        def has_limit_notice():
+            try:
+                return any(kw in page.content() for kw in keywords)
+            except Exception:
+                return False
+
+        if has_limit_notice():
             print("检测到红框限制提示：未到续期时间，静默退出。")
             return
 
-        # 4. 点击续期按钮
-        renew_btn = page.locator(
-            "xpath=//*[not(*) and contains("
-            "translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
-            ", 'dodaj 6')]"
-        ).first
-
+        # 4. 检测服务器是否处于暂停（Serwer zawieszony）状态
         try:
-            print("等待续期按钮加载...")
-            renew_btn.wait_for(state="visible", timeout=15000)
-            print("找到续期按钮，点击...")
-            renew_btn.click()
+            list_page_text = page.locator("body").inner_text(timeout=3000)
+        except Exception:
+            list_page_text = page.content()
+        is_suspended = "zawieszony" in pl_lower(list_page_text)
+        print(f"当前服务器状态：{'暂停（zawieszony）' if is_suspended else '正常运行'}")
 
+        if is_suspended:
+            # 暂停状态：必须先点列表页的「Przedłuż serwer」激活，否则详情页是空的
+            activate_btn = page.locator(
+                f"xpath=//*[not(*) and contains(translate(., '{PL_UPPER}', '{PL_LOWER}'), 'przedłuż serwer')]"
+            ).first
+            try:
+                print("等待「Przedłuż serwer」激活按钮加载...")
+                activate_btn.wait_for(state="visible", timeout=15000)
+                btn_text = (activate_btn.inner_text() or "").strip()
+                print(f"找到激活按钮：「{btn_text}」，点击...")
+                activate_btn.click()
+                time.sleep(5)
+                screenshot(page)
+
+                if has_limit_notice():
+                    print("点击激活按钮后出现限制提示：未到可续期时间，静默退出。")
+                    return
+            except Exception as e:
+                print(f"未找到激活按钮（「Przedłuż serwer」）: {e}")
+                screenshot(page)
+                send_tg_notification("❌ <b>IceHost 暂停状态下未找到激活按钮</b>", SCREENSHOT_FILE)
+                return
+
+        # 5. 激活完成（或本来就是正常状态）后，统一跳转详情页处理真正的续期操作
+        if SERVER_URL:
+            if not goto_with_cf_check(SERVER_URL, "服务器详情页"):
+                return
+            screenshot(page)
+
+            if has_limit_notice():
+                print("详情页检测到红框限制提示：未到续期时间，静默退出。")
+                return
+
+        def find_renew_button():
+            return page.locator(
+                f"xpath=//*[not(*) and ("
+                f"contains(translate(., '{PL_UPPER}', '{PL_LOWER}'), 'dodaj 6')"
+                f" or contains(translate(., '{PL_UPPER}', '{PL_LOWER}'), 'przedłuż serwer')"
+                f" or contains(translate(., '{PL_UPPER}', '{PL_LOWER}'), 'przedluz serwer')"
+                f")]"
+            ).first
+
+        def click_renew_once(label):
+            btn = find_renew_button()
+            print(f"等待续期按钮加载（{label}）...")
+            btn.wait_for(state="visible", timeout=15000)
+            btn_text = (btn.inner_text() or "").strip()
+            print(f"找到续期按钮：「{btn_text}」，点击...")
+            btn.click()
             time.sleep(5)
             screenshot(page)
-            current_source = page.content()
+            return btn_text
 
-            if any(kw in current_source for kw in keywords):
+        try:
+            btn_text = click_renew_once("详情页续期")
+
+            if has_limit_notice():
                 print("点击后出现限制提示：未到可续期时间，静默退出。")
                 return
 
@@ -513,8 +579,7 @@ def run():
             time.sleep(5)
             screenshot(page)
 
-            updated_source = page.content()
-            if any(kw in updated_source for kw in keywords):
+            if has_limit_notice():
                 msg = "⚡ <b>IceHost 续期成功！</b>\n服务器已成功延长 6 小时有效期。"
             else:
                 msg = "ℹ️ <b>IceHost 续期指令已发送</b>\n请查看截图确认结果。"
@@ -522,7 +587,7 @@ def run():
             send_tg_notification(msg, SCREENSHOT_FILE)
 
         except Exception as e:
-            print(f"未找到续期按钮（可能已续满，或按钮文字变动）: {e}")
+            print(f"详情页未找到续期按钮（可能已续满，或按钮文字变动）: {e}")
             screenshot(page)
 
     finally:
