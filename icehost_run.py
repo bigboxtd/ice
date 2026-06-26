@@ -218,66 +218,25 @@ def click_turnstile(page):
     return False
 
 
-def turnstile_token_present(page):
-    """
-    检测 Turnstile 验证是否已成功：验证通过的瞬间会把 token 写入
-    隐藏的 cf-turnstile-response input，这个信号比 iframe 消失快得多，
-    不需要等页面跳转/重渲染。
-    """
-    try:
-        token = page.evaluate(
-            """() => {
-                const els = document.querySelectorAll(
-                    'input[name="cf-turnstile-response"], '
-                    + 'input[name^="cf-turnstile-response"], '
-                    + 'textarea[name="cf-turnstile-response"]'
-                );
-                for (const el of els) {
-                    if (el.value && el.value.length > 10) return el.value.length;
-                }
-                return 0;
-            }"""
-        )
-        if token:
-            print(f"  [CF检测] 检测到 turnstile-response token（长度 {token}），验证已通过。")
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def wait_for_cf_pass(page, timeout_s=110, poll_interval=1.5):
-    """
-    优先用 token 信号判断是否通过（能更快发现已经成功）。
-    超时改回 110 秒：35 秒实测验证下 3 次重试全部失败（日志证实
-    每次都还在 "Just a moment" 验证中就被判超时），说明这个站点
-    在当前网络环境下验证确实需要远超 35 秒（80~100+ 秒）才出结果。
-    """
+def wait_for_cf_pass(page, timeout_s=90):
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        if turnstile_token_present(page):
-            return True
         if not is_cf_challenge(page):
             return True
-        time.sleep(poll_interval)
+        time.sleep(2)
     return False
 
 
 def handle_cf_challenge(page):
-    """
-    处理 CF 挑战，最多重试 3 次。返回 True 表示已通过。
-    每次重试都正常点击（老代码点 2 次也能成功，说明重复点击本身没问题）。
-    关键是每次等待的超时要给够长（110s），这个站点的验证经常要
-    80~100+ 秒才出结果，等不够才是真正导致一直循环失败的原因。
-    """
+    """处理 CF 挑战，最多重试 3 次。返回 True 表示已通过。"""
     for attempt in range(1, 4):
-        if turnstile_token_present(page) or not is_cf_challenge(page):
+        if not is_cf_challenge(page):
             print(f"CF 挑战已通过（第 {attempt} 次检查）。")
             return True
         print(f"[CF] 第 {attempt}/3 次，尝试点击 Turnstile...")
         click_turnstile(page)
-        time.sleep(3)
-        if wait_for_cf_pass(page, timeout_s=110, poll_interval=1.5):
+        time.sleep(8)
+        if wait_for_cf_pass(page, timeout_s=90):
             print(f"[CF] 第 {attempt} 次点击后验证通过。")
             return True
         print(f"[CF] 第 {attempt}/3 次验证未通过。")
@@ -377,23 +336,10 @@ def login_with_email_password(page):
         print("[登录] 无 CF 挑战，直接进入登录页。")
 
     screenshot(page)
-
-    # CF 通过后，如果浏览器 profile 里还有有效的 session cookie，
-    # 登录页会检测到已登录状态并自动跳转到 dashboard，根本不会
-    # 显示用户名密码表单。这种情况要当成"登录成功"处理，
-    # 不能傻等一个不会出现的表单。
-    if "auth/login" not in page.url:
-        print(f"[登录] CF 通过后发现已自动跳转（残留 session 仍有效），当前 URL: {page.url}")
-        return True
-
     print("等待登录表单...")
     try:
         page.wait_for_selector("input[name='username']", timeout=10000)
     except Exception as e:
-        # 再次确认：等表单的过程中也可能发生了自动跳转
-        if "auth/login" not in page.url:
-            print(f"[登录] 等待表单期间发生自动跳转，视为已登录，当前 URL: {page.url}")
-            return True
         print(f"登录表单未出现: {e}")
         screenshot(page)
         send_tg_notification("❌ <b>IceHost 登录表单未出现</b>", SCREENSHOT_FILE)
