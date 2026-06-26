@@ -516,17 +516,23 @@ def run():
 
         def confirm_dialog_if_present():
             """
-            点击 PRZEDŁUŻ SERWER 后会弹出二次确认弹窗：
+            点击「激活/续期」类按钮后，站点常会弹出二次确认弹窗，比如：
               "Potwierdź przedłużenie serwera / Chcesz kontynuować?"
-            必须点击红色的「TAK, PRZEDŁUŻ SERWER」才会真正生效，
-            否则操作等于没做，详情页依然是空的。
+              [ANULUJ]  [TAK, PRZEDŁUŻ SERWER]
+            不同操作（激活 vs 加时）弹出的确认按钮后半句文字可能不一样
+            （比如可能是 "Tak, dodaj 6 godzin" 而不是 "Tak, przedłuż serwer"），
+            所以这里不死板匹配某一句完整文字，只要按钮文字是以
+            "Tak"（波兰语"是"）开头的，就认为是确认按钮并点击。
             """
             confirm_btn = page.locator(
-                f"xpath=//*[not(*) and contains(translate(., '{PL_UPPER}', '{PL_LOWER}'), 'tak, przedłuż serwer')]"
+                f"xpath=//*[not(*) and string-length(normalize-space(.)) <= 40 and starts-with("
+                f"translate(normalize-space(.), '{PL_UPPER}', '{PL_LOWER}'), 'tak'"
+                f")]"
             ).first
             try:
                 confirm_btn.wait_for(state="visible", timeout=8000)
-                print("检测到二次确认弹窗，点击「TAK, PRZEDŁUŻ SERWER」确认...")
+                btn_text = (confirm_btn.inner_text() or "").strip()
+                print(f"检测到二次确认弹窗，点击「{btn_text}」确认...")
                 confirm_btn.click()
                 time.sleep(5)
                 screenshot(page)
@@ -565,6 +571,37 @@ def run():
             if not goto_with_cf_check(SERVER_URL, "服务器详情页"):
                 return
             screenshot(page)
+
+            def check_and_start_server():
+                """
+                检测服务器运行状态是否为 OFFLINE（关机），如果是就点击
+                「START」启动。注意：必须精确匹配文字等于 "start"，不能用
+                contains，否则会连「RESTART」（重启）按钮也一起匹配上，
+                误点重启而不是启动。
+                """
+                try:
+                    body_text = page.locator("body").inner_text(timeout=3000)
+                except Exception:
+                    body_text = page.content()
+                if "offline" not in pl_lower(body_text):
+                    print("服务器当前不是 OFFLINE 状态，无需点击启动。")
+                    return
+                print("检测到服务器状态为 OFFLINE，尝试点击「START」启动...")
+                start_btn = page.locator(
+                    f"xpath=//*[not(*) and translate(normalize-space(.), "
+                    f"'{PL_UPPER}', '{PL_LOWER}') = 'start']"
+                ).first
+                try:
+                    start_btn.wait_for(state="visible", timeout=8000)
+                    start_btn.click()
+                    time.sleep(5)
+                    screenshot(page)
+                    confirm_dialog_if_present()
+                    print("已点击「START」启动按钮。")
+                except Exception as e:
+                    print(f"未找到「START」启动按钮: {e}")
+
+            check_and_start_server()
 
             if has_limit_notice():
                 print("详情页检测到红框限制提示：未到续期时间，静默退出。")
