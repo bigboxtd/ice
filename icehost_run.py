@@ -514,6 +514,27 @@ def run():
         is_suspended = "zawieszony" in pl_lower(list_page_text)
         print(f"当前服务器状态：{'暂停（zawieszony）' if is_suspended else '正常运行'}")
 
+        def confirm_dialog_if_present():
+            """
+            点击 PRZEDŁUŻ SERWER 后会弹出二次确认弹窗：
+              "Potwierdź przedłużenie serwera / Chcesz kontynuować?"
+            必须点击红色的「TAK, PRZEDŁUŻ SERWER」才会真正生效，
+            否则操作等于没做，详情页依然是空的。
+            """
+            confirm_btn = page.locator(
+                f"xpath=//*[not(*) and contains(translate(., '{PL_UPPER}', '{PL_LOWER}'), 'tak, przedłuż serwer')]"
+            ).first
+            try:
+                confirm_btn.wait_for(state="visible", timeout=8000)
+                print("检测到二次确认弹窗，点击「TAK, PRZEDŁUŻ SERWER」确认...")
+                confirm_btn.click()
+                time.sleep(5)
+                screenshot(page)
+                return True
+            except Exception:
+                print("未检测到二次确认弹窗（可能不需要确认，或弹窗结构有变）。")
+                return False
+
         if is_suspended:
             # 暂停状态：必须先点列表页的「Przedłuż serwer」激活，否则详情页是空的
             activate_btn = page.locator(
@@ -525,8 +546,10 @@ def run():
                 btn_text = (activate_btn.inner_text() or "").strip()
                 print(f"找到激活按钮：「{btn_text}」，点击...")
                 activate_btn.click()
-                time.sleep(5)
+                time.sleep(2)
                 screenshot(page)
+
+                confirm_dialog_if_present()
 
                 if has_limit_notice():
                     print("点击激活按钮后出现限制提示：未到可续期时间，静默退出。")
@@ -569,6 +592,7 @@ def run():
 
         try:
             btn_text = click_renew_once("详情页续期")
+            confirm_dialog_if_present()
 
             if has_limit_notice():
                 print("点击后出现限制提示：未到可续期时间，静默退出。")
